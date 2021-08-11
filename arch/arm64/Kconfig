@@ -669,6 +669,24 @@ config ARM64_ERRATUM_1508412
 
 	  If unsure, say Y.
 
+config ARM64_ERRATUM_2169019
+	bool "GIC-700: 2169019: Doorbell missed due to an ITS command"
+	default y
+	help
+	  This option adds a workaround for Arm GIC-700 erratum 2169019.
+
+	  In affected GIC-700 versions (r0p0, r0p1, r1p0) a doorbell IRQ
+	  might be missed if an ITS command or a GICR_INVLPIR/GICR_INVALLR
+	  register access remove the source of a doorbell for a vCPU
+	  whilst an VLPI/VSGI is triggered for the same vCPU while the GIC
+	  services the command.
+
+	  Work around the issue by inserting INVDB commands after
+	  GICR_INVLPIR invalidations and commands that remove LPIs
+	  (VMOVI, VCLEAR, INV, INVALL).
+
+	  If unsure, say Y.
+
 config CAVIUM_ERRATUM_22375
 	bool "Cavium erratum 22375, 24313"
 	default y

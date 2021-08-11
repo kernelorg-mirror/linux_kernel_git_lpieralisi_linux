@@ -42,6 +42,7 @@
 #define ITS_FLAGS_CMDQ_NEEDS_FLUSHING		(1ULL << 0)
 #define ITS_FLAGS_WORKAROUND_CAVIUM_22375	(1ULL << 1)
 #define ITS_FLAGS_WORKAROUND_CAVIUM_23144	(1ULL << 2)
+#define ITS_FLAGS_WORKAROUND_ARM_2169019	(1ULL << 3)
 
 #define RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING	(1 << 0)
 #define RDIST_FLAGS_RD_TABLES_PREALLOCATED	(1 << 1)
@@ -1150,6 +1151,8 @@ static void its_build_vsync_cmd(struct its_node *its,
 static BUILD_SINGLE_CMD_FUNC(its_send_single_vcommand, its_cmd_vbuilder_t,
 			     struct its_vpe, its_build_vsync_cmd)
 
+static void its_send_invdb(struct its_node *its, struct its_vpe *vpe);
+
 static void its_send_int(struct its_device *dev, u32 event_id)
 {
 	struct its_cmd_desc desc;
@@ -1268,6 +1271,9 @@ static void its_send_vmovi(struct its_device *dev, u32 id)
 	desc.its_vmovi_cmd.db_enabled = map->db_enabled;
 
 	its_send_single_vcommand(dev->its, its_build_vmovi_cmd, &desc);
+
+	if (dev->its->flags & ITS_FLAGS_WORKAROUND_ARM_2169019)
+		its_send_invdb(dev->its, map->vpe);
 }
 
 static void its_send_vmapp(struct its_node *its,
@@ -1332,6 +1338,9 @@ static void its_send_vinvall(struct its_node *its, struct its_vpe *vpe)
 
 	desc.its_vinvall_cmd.vpe = vpe;
 	its_send_single_vcommand(its, its_build_vinvall_cmd, &desc);
+
+	if (its->flags & ITS_FLAGS_WORKAROUND_ARM_2169019)
+		its_send_invdb(its, vpe);
 }
 
 static void its_send_vinv(struct its_device *dev, u32 event_id)
@@ -1346,6 +1355,13 @@ static void its_send_vinv(struct its_device *dev, u32 event_id)
 	desc.its_inv_cmd.event_id = event_id;
 
 	its_send_single_vcommand(dev->its, its_build_vinv_cmd, &desc);
+
+	if (dev->its->flags & ITS_FLAGS_WORKAROUND_ARM_2169019) {
+		struct its_vlpi_map *map;
+
+		map = dev_event_to_vlpi_map(dev, event_id);
+		its_send_invdb(dev->its, map->vpe);
+	}
 }
 
 static void its_send_vint(struct its_device *dev, u32 event_id)
@@ -1374,6 +1390,13 @@ static void its_send_vclear(struct its_device *dev, u32 event_id)
 	desc.its_clear_cmd.event_id = event_id;
 
 	its_send_single_vcommand(dev->its, its_build_vclear_cmd, &desc);
+
+	if (dev->its->flags & ITS_FLAGS_WORKAROUND_ARM_2169019) {
+		struct its_vlpi_map *map;
+
+		map = dev_event_to_vlpi_map(dev, event_id);
+		its_send_invdb(dev->its, map->vpe);
+	}
 }
 
 static void its_send_invdb(struct its_node *its, struct its_vpe *vpe)
@@ -1454,6 +1477,14 @@ static void direct_lpi_inv(struct irq_data *d)
 	gic_write_lpir(val, rdbase + GICR_INVLPIR);
 
 	wait_for_syncr(rdbase);
+
+	if (map) {
+		struct its_device *its_dev = irq_data_get_irq_chip_data(d);
+
+		if (its_dev->its->flags & ITS_FLAGS_WORKAROUND_ARM_2169019)
+			its_send_invdb(its_dev->its, map->vpe);
+	}
+
 	raw_spin_unlock(&gic_data_rdist_cpu(cpu)->rd_lock);
 	irq_to_cpuid_unlock(d, flags);
 }
@@ -4100,6 +4131,9 @@ static void its_vpe_4_1_deschedule(struct its_vpe *vpe,
 	}
 }
 
+/* ITS to use to send a GIC700 2169019 workaround */
+static struct its_node *its_gic700_2169019;
+
 static void its_vpe_4_1_invall(struct its_vpe *vpe)
 {
 	void __iomem *rdbase;
@@ -4117,6 +4151,10 @@ static void its_vpe_4_1_invall(struct its_vpe *vpe)
 	gic_write_lpir(val, rdbase + GICR_INVALLR);
 
 	wait_for_syncr(rdbase);
+
+	if (its_gic700_2169019)
+		its_send_invdb(its_gic700_2169019, vpe);
+
 	raw_spin_unlock(&gic_data_rdist_cpu(cpu)->rd_lock);
 	vpe_to_cpuid_unlock(vpe, flags);
 }
@@ -4695,7 +4733,39 @@ static bool __maybe_unused its_enable_quirk_hip07_161600802(void *data)
 	return true;
 }
 
+static bool __maybe_unused its_enable_quirk_gic700_2169019(void *data)
+{
+	struct its_node *its = data;
+	u32 iidr = readl_relaxed(its->base + GITS_IIDR);
+	u32 variant;
+
+	variant = GITS_IIDR_VAR(iidr);
+	if (variant >= 2)
+		return false;
+
+	its->flags |= ITS_FLAGS_WORKAROUND_ARM_2169019;
+
+	/*
+	 * An INVDB command workaround after GICR_INVALLR can be
+	 * sent to any ITS, just record the first one that matches
+	 * the IIDR affected by the bug and stash it for use in
+	 * its_vpe_4_1_invall().
+	 */
+	if (!its_gic700_2169019)
+		its_gic700_2169019 = its;
+
+	return true;
+}
+
 static const struct gic_quirk its_quirks[] = {
+#ifdef CONFIG_ARM64_ERRATUM_2169019
+	{
+		.desc	= "ITS: GIC-700 erratum 2169019",
+		.iidr	= 0x0400043b,
+		.mask	= 0xfff0ffff,
+		.init	= its_enable_quirk_gic700_2169019,
+	},
+#endif
 #ifdef CONFIG_CAVIUM_ERRATUM_22375
 	{
 		.desc	= "ITS: Cavium errata 22375, 24313",
