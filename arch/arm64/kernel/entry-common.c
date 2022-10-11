@@ -284,6 +284,8 @@ static void do_interrupt_handler(struct pt_regs *regs,
 	set_irq_regs(old_regs);
 }
 
+extern void (*handle_arch_nmi_irq)(struct pt_regs *);
+extern void (*handle_arch_nmi_fiq)(struct pt_regs *);
 extern void (*handle_arch_irq)(struct pt_regs *);
 extern void (*handle_arch_fiq)(struct pt_regs *);
 
@@ -463,6 +465,15 @@ asmlinkage void noinstr el1h_64_sync_handler(struct pt_regs *regs)
 	}
 }
 
+static __always_inline void __el1_nmi(struct pt_regs *regs,
+				      void (*handler)(struct pt_regs *))
+{
+	arm64_enter_nmi(regs);
+	do_interrupt_handler(regs, handler);
+	arm64_exit_nmi(regs);
+	allint_clear();
+}
+
 static __always_inline void __el1_pnmi(struct pt_regs *regs,
 				       void (*handler)(struct pt_regs *))
 {
@@ -484,10 +495,21 @@ static __always_inline void __el1_irq(struct pt_regs *regs,
 
 	exit_to_kernel_mode(regs);
 }
-static void noinstr el1_interrupt(struct pt_regs *regs,
-				  void (*handler)(struct pt_regs *))
+
+static void noinstr el1_interrupt(struct pt_regs *regs, u64 nmi_flag,
+				  void (*handler)(struct pt_regs *),
+				  void (*nmi_handler)(struct pt_regs *))
 {
-	nmi_unmask();
+	if (system_uses_nmi()) {
+		/* Is there a NMI to handle? */
+		if (read_sysreg(isr_el1) & nmi_flag) {
+			__el1_nmi(regs, nmi_handler);
+			return;
+		}
+
+		allint_clear();
+	}
+
 	write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
 
 	if (IS_ENABLED(CONFIG_ARM64_PSEUDO_NMI) && !interrupts_enabled(regs))
@@ -498,12 +520,12 @@ static void noinstr el1_interrupt(struct pt_regs *regs,
 
 asmlinkage void noinstr el1h_64_irq_handler(struct pt_regs *regs)
 {
-	el1_interrupt(regs, handle_arch_irq);
+	el1_interrupt(regs, ISR_EL1_IS, handle_arch_irq, handle_arch_nmi_irq);
 }
 
 asmlinkage void noinstr el1h_64_fiq_handler(struct pt_regs *regs)
 {
-	el1_interrupt(regs, handle_arch_fiq);
+	el1_interrupt(regs, ISR_EL1_FS, handle_arch_fiq, handle_arch_nmi_fiq);
 }
 
 asmlinkage void noinstr el1h_64_error_handler(struct pt_regs *regs)
@@ -715,12 +737,34 @@ asmlinkage void noinstr el0t_64_sync_handler(struct pt_regs *regs)
 	}
 }
 
-static void noinstr el0_interrupt(struct pt_regs *regs,
-				  void (*handler)(struct pt_regs *))
+static void noinstr el0_interrupt(struct pt_regs *regs, u64 nmi_flag,
+				  void (*handler)(struct pt_regs *),
+				  void (*nmi_handler)(struct pt_regs *))
 {
 	enter_from_user_mode(regs);
 
-	nmi_unmask();
+	if (system_uses_nmi()) {
+		/* Is there a NMI to handle? */
+		if (read_sysreg(isr_el1) & nmi_flag) {
+			/*
+			 * Any system with FEAT_NMI should not be
+			 * affected by Spectre v2 so we don't mitigate
+			 * here.
+			 */
+
+			arm64_enter_nmi(regs);
+			do_interrupt_handler(regs, nmi_handler);
+			arm64_exit_nmi(regs);
+
+			allint_clear();
+
+			exit_to_user_mode(regs);
+			return;
+		}
+
+		allint_clear();
+	}
+
 	write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
 
 	if (regs->pc & BIT(55))
@@ -735,7 +779,7 @@ static void noinstr el0_interrupt(struct pt_regs *regs,
 
 static void noinstr __el0_irq_handler_common(struct pt_regs *regs)
 {
-	el0_interrupt(regs, handle_arch_irq);
+	el0_interrupt(regs, ISR_EL1_IS, handle_arch_irq, handle_arch_nmi_irq);
 }
 
 asmlinkage void noinstr el0t_64_irq_handler(struct pt_regs *regs)
@@ -745,7 +789,7 @@ asmlinkage void noinstr el0t_64_irq_handler(struct pt_regs *regs)
 
 static void noinstr __el0_fiq_handler_common(struct pt_regs *regs)
 {
-	el0_interrupt(regs, handle_arch_fiq);
+	el0_interrupt(regs, ISR_EL1_FS, handle_arch_fiq, handle_arch_nmi_fiq);
 }
 
 asmlinkage void noinstr el0t_64_fiq_handler(struct pt_regs *regs)
