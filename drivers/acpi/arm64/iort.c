@@ -595,6 +595,37 @@ u32 iort_msi_map_id(struct device *dev, u32 input_id)
 }
 
 /**
+ * iort_msi_xlate() - Map a MSI input ID for a device
+ * @dev: The device for which the mapping is to be done.
+ * @input_id: The device input ID.
+ * @fwnode: Pointer to store the fwnode
+ *
+ * Returns: mapped MSI ID on success, input ID otherwise
+ *	    On success, the fwnode pointer is initialized to the MSI
+ *	    controller fwnode handle.
+ */
+u32 iort_msi_xlate(struct device *dev, u32 input_id, struct fwnode_handle **fwnode)
+{
+	struct acpi_iort_its_group *its;
+	struct acpi_iort_node *node;
+	u32 dev_id;
+
+	node = iort_find_dev_node(dev);
+	if (!node)
+		return -ENXIO;
+
+	node = iort_node_map_id(node, input_id, &dev_id, IORT_MSI_TYPE);
+	if (!node)
+		return -ENXIO;
+
+	/* Move to ITS specific data */
+	its = (struct acpi_iort_its_group *)node->node_data;
+
+	*fwnode = iort_find_domain_token(its->identifiers[0]);
+
+	return dev_id;
+}
+/**
  * iort_pmsi_get_dev_id() - Get the device id for a device
  * @dev: The device for which the mapping is to be done.
  * @dev_id: The device ID found.

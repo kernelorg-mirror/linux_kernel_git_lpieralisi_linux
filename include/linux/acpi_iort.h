@@ -31,6 +31,7 @@ int iort_pmsi_get_dev_id(struct device *dev, u32 *dev_id);
 
 #ifdef CONFIG_ACPI_IORT
 u32 iort_msi_map_id(struct device *dev, u32 id);
+u32 iort_msi_xlate(struct device *dev, u32 id, struct fwnode_handle **node);
 struct irq_domain *iort_get_device_domain(struct device *dev, u32 id,
 					  enum irq_domain_bus_token bus_token);
 void acpi_configure_pmsi_domain(struct device *dev);
@@ -45,6 +46,8 @@ void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head);
 phys_addr_t acpi_iort_dma_get_max_cpu_address(void);
 #else
 static inline u32 iort_msi_map_id(struct device *dev, u32 id)
+{ return id; }
+static inline u32 iort_msi_xlate(struct device *dev, u32 id, struct fwnode_handle **node)
 { return id; }
 static inline struct irq_domain *iort_get_device_domain(
 	struct device *dev, u32 id, enum irq_domain_bus_token bus_token)
