@@ -1546,29 +1546,6 @@ static bool kvm_vma_mte_allowed(struct vm_area_struct *vma)
 	return vma->vm_flags & VM_MTE_ALLOWED;
 }
 
-static int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa,
-			 kvm_pfn_t pfn, unsigned long map_size,
-			 enum kvm_pgtable_prot prot,
-			 struct kvm_mmu_memory_cache *memcache)
-{
-	struct realm *realm = &kvm->arch.realm;
-
-	/*
-	 * Write permission is required for now even though it's possible to
-	 * map unprotected pages (granules) as read-only. It's impossible to
-	 * map protected pages (granules) as read-only.
-	 */
-	if (WARN_ON(!(prot & KVM_PGTABLE_PROT_W)))
-		return -EFAULT;
-
-	ipa = ALIGN_DOWN(ipa, PAGE_SIZE);
-	if (!kvm_realm_is_private_address(realm, ipa))
-		return realm_map_non_secure(realm, ipa, pfn, map_size, prot,
-					    memcache);
-
-	return realm_map_protected(kvm, ipa, pfn, map_size, memcache);
-}
-
 static bool kvm_vma_is_cacheable(struct vm_area_struct *vma)
 {
 	switch (FIELD_GET(PTE_ATTRINDX_MASK, pgprot_val(vma->vm_page_prot))) {
@@ -2115,12 +2092,15 @@ static int kvm_s2_fault_map(const struct kvm_s2_fault_desc *s2fd,
 	if (!perm_fault_granule && !s2vi->map_non_cacheable && kvm_has_mte(kvm))
 		sanitise_mte_tags(kvm, pfn, mapping_size);
 
-	/*
-	 * Under the premise of getting a FSC_PERM fault, we just need to relax
-	 * permissions only if mapping_size equals perm_fault_granule. Otherwise,
-	 * kvm_pgtable_stage2_map() should be called to change block size.
-	 */
-	if (mapping_size == perm_fault_granule) {
+	if (kvm_is_realm(kvm)) {
+		ret = realm_map_ipa(kvm, s2fd->fault_ipa, pfn, mapping_size,
+				    prot, memcache);
+	} else if (mapping_size == perm_fault_granule) {
+		/*
+		 * Under the premise of getting a FSC_PERM fault, we just need to relax
+		 * permissions only if mapping_size equals perm_fault_granule. Otherwise,
+		 * kvm_pgtable_stage2_map() should be called to change block size.
+		 */
 		/*
 		 * Drop the SW bits in favour of those stored in the
 		 * PTE, which will be preserved.
@@ -2128,9 +2108,6 @@ static int kvm_s2_fault_map(const struct kvm_s2_fault_desc *s2fd,
 		prot &= ~KVM_NV_GUEST_MAP_SZ;
 		ret = KVM_PGT_FN(kvm_pgtable_stage2_relax_perms)(pgt, gfn_to_gpa(gfn),
 								 prot, flags);
-	} else if (kvm_is_realm(kvm)) {
-		ret = realm_map_ipa(kvm, s2fd->fault_ipa, pfn, mapping_size,
-				    prot, memcache);
 	} else {
 		ret = KVM_PGT_FN(kvm_pgtable_stage2_map)(pgt, gfn_to_gpa(gfn), mapping_size,
 							 __pfn_to_phys(pfn), prot,

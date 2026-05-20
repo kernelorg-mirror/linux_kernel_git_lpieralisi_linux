@@ -721,11 +721,11 @@ static unsigned long addr_range_desc(unsigned long phys, unsigned long size)
 	return out;
 }
 
-int realm_map_protected(struct kvm *kvm,
-			unsigned long ipa,
-			kvm_pfn_t pfn,
-			unsigned long map_size,
-			struct kvm_mmu_memory_cache *memcache)
+static int realm_map_protected(struct kvm *kvm,
+			       unsigned long ipa,
+			       kvm_pfn_t pfn,
+			       unsigned long map_size,
+			       struct kvm_mmu_memory_cache *memcache)
 {
 	struct realm *realm = &kvm->arch.realm;
 	phys_addr_t phys = __pfn_to_phys(pfn);
@@ -789,13 +789,14 @@ err_undelegate:
 	return -ENXIO;
 }
 
-int realm_map_non_secure(struct realm *realm,
-			 unsigned long ipa,
-			 kvm_pfn_t pfn,
-			 unsigned long size,
-			 enum kvm_pgtable_prot prot,
-			 struct kvm_mmu_memory_cache *memcache)
+static int realm_map_non_secure(struct kvm *kvm,
+				unsigned long ipa,
+				kvm_pfn_t pfn,
+				unsigned long size,
+				enum kvm_pgtable_prot prot,
+				struct kvm_mmu_memory_cache *memcache)
 {
+	struct realm *realm = &kvm->arch.realm;
 	unsigned long attr, flags = 0;
 	phys_addr_t rd = virt_to_phys(realm->rd);
 	phys_addr_t phys = __pfn_to_phys(pfn);
@@ -838,8 +839,17 @@ int realm_map_non_secure(struct realm *realm,
 		if (RMI_RETURN_STATUS(ret) == RMI_ERROR_RTT) {
 			/* Create missing RTTs and retry */
 			int level = RMI_RETURN_INDEX(ret);
+			int req_level = find_map_level(realm, ipa, ipa_top);
 
-			WARN_ON(level == KVM_PGTABLE_LAST_LEVEL);
+			/*
+			 * There already exists a mapping at the level. May be
+			 * we are relaxing a permission for the given range ?
+			 */
+			if (level >= req_level) {
+				realm_unmap_shared_range(kvm, ipa, ipa_top, true);
+				continue;
+			}
+
 			ret = realm_create_rtt_levels(realm, ipa, level,
 						      KVM_PGTABLE_LAST_LEVEL,
 						      memcache);
@@ -858,6 +868,30 @@ int realm_map_non_secure(struct realm *realm,
 	}
 
 	return 0;
+}
+
+int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa,
+		  kvm_pfn_t pfn, unsigned long map_size,
+		  enum kvm_pgtable_prot prot,
+		  struct kvm_mmu_memory_cache *memcache)
+{
+	struct realm *realm = &kvm->arch.realm;
+
+
+	ipa = ALIGN_DOWN(ipa, PAGE_SIZE);
+	if (!kvm_realm_is_private_address(realm, ipa)) {
+		return realm_map_non_secure(kvm, ipa, pfn, map_size, prot,
+					    memcache);
+	}
+
+	/*
+	 * Write permission is required for now even though it's possible to
+	 * map unprotected pages (granules) as read-only. It's impossible to
+	 * map protected pages (granules) as read-only.
+	 */
+	if (WARN_ON(!(prot & KVM_PGTABLE_PROT_W)))
+		return -EFAULT;
+	return realm_map_protected(kvm, ipa, pfn, map_size, memcache);
 }
 
 static int populate_region_cb(struct kvm *kvm, gfn_t gfn, kvm_pfn_t pfn,

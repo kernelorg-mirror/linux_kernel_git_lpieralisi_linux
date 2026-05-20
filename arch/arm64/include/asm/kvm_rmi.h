@@ -103,17 +103,11 @@ void kvm_realm_unmap_range(struct kvm *kvm,
 			   unsigned long size,
 			   bool unmap_private,
 			   bool may_block);
-int realm_map_protected(struct kvm *kvm,
-			unsigned long base_ipa,
-			kvm_pfn_t pfn,
-			unsigned long size,
-			struct kvm_mmu_memory_cache *memcache);
-int realm_map_non_secure(struct realm *realm,
-			 unsigned long ipa,
-			 kvm_pfn_t pfn,
-			 unsigned long size,
-			 enum kvm_pgtable_prot prot,
-			 struct kvm_mmu_memory_cache *memcache);
+int realm_map_ipa(struct kvm *kvm, phys_addr_t ipa,
+		  kvm_pfn_t pfn, unsigned long map_size,
+		  enum kvm_pgtable_prot prot,
+		  struct kvm_mmu_memory_cache *memcache);
+
 int realm_psci_complete(struct kvm_vcpu *source,
 			struct kvm_vcpu *target,
 			unsigned long status);
