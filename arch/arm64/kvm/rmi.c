@@ -803,8 +803,7 @@ static int realm_map_non_secure(struct kvm *kvm,
 	unsigned long ipa_top = ipa + size;
 	int ret;
 
-	if (WARN_ON(!IS_ALIGNED(size, PAGE_SIZE) ||
-		    !IS_ALIGNED(ipa, size)))
+	if (WARN_ON(!IS_ALIGNED(size, PAGE_SIZE)))
 		return -EINVAL;
 
 	switch (prot & (KVM_PGTABLE_PROT_DEVICE | KVM_PGTABLE_PROT_NORMAL_NC)) {
