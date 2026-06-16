@@ -845,7 +845,7 @@ static int realm_map_non_secure(struct kvm *kvm,
 			 * we are relaxing a permission for the given range ?
 			 */
 			if (level >= req_level) {
-				realm_unmap_shared_range(kvm, ipa, ipa_top, true);
+				realm_unmap_shared_range(kvm, ipa, ipa_top, false);
 				continue;
 			}
 

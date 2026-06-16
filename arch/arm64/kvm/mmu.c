@@ -2043,6 +2043,13 @@ static int kvm_s2_fault_compute_prot(const struct kvm_s2_fault_desc *s2fd,
 	return 0;
 }
 
+static bool shared_ipa_fault(struct kvm *kvm, phys_addr_t fault_ipa)
+{
+	gpa_t gpa = kvm_gpa_from_fault(kvm, fault_ipa);
+
+	return (gpa != fault_ipa);
+}
+
 static int kvm_s2_fault_map(const struct kvm_s2_fault_desc *s2fd,
 			    const struct kvm_s2_fault_vma_info *s2vi,
 			    enum kvm_pgtable_prot prot,
@@ -2093,7 +2100,10 @@ static int kvm_s2_fault_map(const struct kvm_s2_fault_desc *s2fd,
 		sanitise_mte_tags(kvm, pfn, mapping_size);
 
 	if (kvm_is_realm(kvm)) {
-		ret = realm_map_ipa(kvm, s2fd->fault_ipa, pfn, mapping_size,
+		gpa_t gpa = gfn_to_gpa(gfn);
+		if (shared_ipa_fault(kvm, s2fd->fault_ipa))
+			gpa |= BIT(kvm->arch.realm.ia_bits - 1);
+		ret = realm_map_ipa(kvm, gpa, pfn, mapping_size,
 				    prot, memcache);
 	} else if (mapping_size == perm_fault_granule) {
 		/*
@@ -2264,13 +2274,6 @@ int kvm_handle_guest_sea(struct kvm_vcpu *vcpu)
 	}
 
 	return 0;
-}
-
-static bool shared_ipa_fault(struct kvm *kvm, phys_addr_t fault_ipa)
-{
-	gpa_t gpa = kvm_gpa_from_fault(kvm, fault_ipa);
-
-	return (gpa != fault_ipa);
 }
 
 /**
@@ -2456,7 +2459,8 @@ int kvm_handle_guest_abort(struct kvm_vcpu *vcpu)
 				!write_fault &&
 				!kvm_vcpu_trap_is_exec_fault(vcpu));
 
-		if (kvm_slot_has_gmem(memslot) && !shared_ipa_fault(vcpu->kvm, fault_ipa))
+		if (kvm_slot_has_gmem(memslot) && (!shared_ipa_fault(vcpu->kvm, fault_ipa)
+				|| kvm_memslot_is_gmem_only(memslot)))
 			ret = gmem_abort(&s2fd);
 		else
 			ret = user_mem_abort(&s2fd);
@@ -2753,7 +2757,7 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	return ret;
 }
 
-#ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
+#ifdef CONFIG_KVM_VM_MEMORY_ATTRIBUTES
 bool kvm_arch_pre_set_memory_attributes(struct kvm *kvm,
 					struct kvm_gfn_range *range)
 {
