@@ -24,6 +24,9 @@
 
 DEFINE_PER_CPU(struct kvm_nvhe_init_params, kvm_init_params);
 
+/* Number of implemented GICv3 LRs. Used by flush_hyp_vcpu(). */
+unsigned int hyp_gicv3_nr_lr;
+
 void __kvm_hyp_host_forward_smc(struct kvm_cpu_context *host_ctxt);
 
 static void __hyp_sve_save_guest(struct kvm_vcpu *vcpu)
@@ -128,16 +131,30 @@ static void flush_hyp_vcpu(struct pkvm_hyp_vcpu *hyp_vcpu)
 
 	hyp_vcpu->vcpu.arch.ctxt	= host_vcpu->arch.ctxt;
 
+	/* __hyp_running_vcpu must be NULL in a guest context. */
+	hyp_vcpu->vcpu.arch.ctxt.__hyp_running_vcpu = NULL;
+
 	hyp_vcpu->vcpu.arch.mdcr_el2	= host_vcpu->arch.mdcr_el2;
-	hyp_vcpu->vcpu.arch.hcr_el2 &= ~(HCR_TWI | HCR_TWE);
+	/*
+	 * HCR_EL2.VSE is host-owned (a pending virtual SError to inject), not a
+	 * trap-control bit, so it must flow to the hyp vCPU alongside TWI/TWE
+	 * for the vSError to be delivered. sync_hyp_vcpu() reflects it back.
+	 */
+	hyp_vcpu->vcpu.arch.hcr_el2 &= ~(HCR_TWI | HCR_TWE | HCR_VSE);
 	hyp_vcpu->vcpu.arch.hcr_el2 |= READ_ONCE(host_vcpu->arch.hcr_el2) &
-						 (HCR_TWI | HCR_TWE);
+						 (HCR_TWI | HCR_TWE | HCR_VSE);
 
 	hyp_vcpu->vcpu.arch.iflags	= host_vcpu->arch.iflags;
 
 	hyp_vcpu->vcpu.arch.vsesr_el2	= host_vcpu->arch.vsesr_el2;
 
 	hyp_vcpu->vcpu.arch.vgic_cpu.vgic_v3 = host_vcpu->arch.vgic_cpu.vgic_v3;
+
+	/* Bound used_lrs by the number of implemented list registers. */
+	hyp_vcpu->vcpu.arch.vgic_cpu.vgic_v3.used_lrs =
+		min_t(unsigned int,
+		      hyp_vcpu->vcpu.arch.vgic_cpu.vgic_v3.used_lrs,
+		      hyp_gicv3_nr_lr);
 
 	hyp_vcpu->vcpu.arch.pid = host_vcpu->arch.pid;
 }
@@ -709,6 +726,14 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__kvm_tlb_flush_vmid_range),
 	HANDLE_FUNC(__kvm_flush_cpu_context),
 	HANDLE_FUNC(__kvm_timer_set_cntvoff),
+	HANDLE_FUNC(__tracing_load),
+	HANDLE_FUNC(__tracing_unload),
+	HANDLE_FUNC(__tracing_enable),
+	HANDLE_FUNC(__tracing_swap_reader),
+	HANDLE_FUNC(__tracing_update_clock),
+	HANDLE_FUNC(__tracing_reset),
+	HANDLE_FUNC(__tracing_enable_event),
+	HANDLE_FUNC(__tracing_write_event),
 	HANDLE_FUNC(__vgic_v3_save_aprs),
 	HANDLE_FUNC(__vgic_v3_restore_vmcr_aprs),
 	HANDLE_FUNC(__vgic_v5_save_apr),
@@ -735,21 +760,15 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_vcpu_load),
 	HANDLE_FUNC(__pkvm_vcpu_put),
 	HANDLE_FUNC(__pkvm_tlb_flush_vmid),
-	HANDLE_FUNC(__tracing_load),
-	HANDLE_FUNC(__tracing_unload),
-	HANDLE_FUNC(__tracing_enable),
-	HANDLE_FUNC(__tracing_swap_reader),
-	HANDLE_FUNC(__tracing_update_clock),
-	HANDLE_FUNC(__tracing_reset),
-	HANDLE_FUNC(__tracing_enable_event),
-	HANDLE_FUNC(__tracing_write_event),
 };
 
 static void handle_host_hcall(struct kvm_cpu_context *host_ctxt)
 {
 	DECLARE_REG(unsigned long, id, host_ctxt, 0);
-	unsigned long hcall_min = 0, hcall_max = -1;
+	unsigned long hcall_min = 0, hcall_max = __KVM_HOST_SMCCC_FUNC_MAX;
 	hcall_t hfn;
+
+	BUILD_BUG_ON(ARRAY_SIZE(host_hcall) != __KVM_HOST_SMCCC_FUNC_MAX);
 
 	/*
 	 * If pKVM has been initialised then reject any calls to the
@@ -763,16 +782,14 @@ static void handle_host_hcall(struct kvm_cpu_context *host_ctxt)
 	if (static_branch_unlikely(&kvm_protected_mode_initialized)) {
 		hcall_min = __KVM_HOST_SMCCC_FUNC_MIN_PKVM;
 	} else {
-		hcall_max = __KVM_HOST_SMCCC_FUNC_MAX_NO_PKVM;
+		hcall_max = __KVM_HOST_SMCCC_FUNC_PKVM_ONLY;
 	}
 
 	id &= ~ARM_SMCCC_CALL_HINTS;
 	id -= KVM_HOST_SMCCC_ID(0);
 
-	if (unlikely(id < hcall_min || id > hcall_max ||
-		     id >= ARRAY_SIZE(host_hcall))) {
+	if (unlikely(id < hcall_min || id >= hcall_max))
 		goto inval;
-	}
 
 	hfn = host_hcall[id];
 	if (unlikely(!hfn))
@@ -805,6 +822,10 @@ static void handle_host_smc(struct kvm_cpu_context *host_ctxt)
 	}
 
 	func_id &= ~ARM_SMCCC_CALL_HINTS;
+	if (upper_32_bits(func_id)) {
+		cpu_reg(host_ctxt, 0) = SMCCC_RET_NOT_SUPPORTED;
+		goto exit_skip_instr;
+	}
 
 	handled = kvm_host_psci_handler(host_ctxt, func_id);
 	if (!handled)

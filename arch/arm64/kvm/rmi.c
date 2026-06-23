@@ -916,7 +916,7 @@ static long populate_region(struct kvm *kvm,
 
 	mutex_lock(&kvm->slots_lock);
 	ret = kvm_gmem_populate(kvm, base_gfn, u64_to_user_ptr(uaddr), pages,
-				populate_region_cb, &data_flags);
+				false, populate_region_cb, &data_flags);
 	mutex_unlock(&kvm->slots_lock);
 
 	return ret;
