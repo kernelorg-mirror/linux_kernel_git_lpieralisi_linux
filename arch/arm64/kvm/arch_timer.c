@@ -490,10 +490,9 @@ void kvm_realm_timers_update(struct kvm_vcpu *vcpu)
 	for (i = 0; i < NR_KVM_EL0_TIMERS; i++) {
 		struct arch_timer_context *timer = &arch_timer->timers[i];
 		bool status = timer_get_ctl(timer) & ARCH_TIMER_CTRL_IT_STAT;
-		bool level = kvm_timer_irq_can_fire(timer) && status;
+		bool level = kvm_timer_enabled(timer) && status;
 
-		if (level != timer->irq.level)
-			kvm_timer_update_irq(vcpu, level, timer);
+		kvm_timer_update_irq(vcpu, level, timer);
 	}
 }
 
