@@ -1567,47 +1567,14 @@ int iort_dma_get_ranges(struct device *dev, u64 *limit)
 		return nc_dma_get_range(dev, limit);
 }
 
-static void __init acpi_iort_register_irq(int hwirq, const char *name,
-					  int trigger,
-					  struct resource *res)
+static void __init acpi_iort_add_irq(u32 hwirq, const char *name, unsigned int trigger_val,
+				     struct fwnode_handle *fwnode)
 {
-	int irq = acpi_register_gsi(NULL, hwirq, trigger,
-				    ACPI_ACTIVE_HIGH);
-
-	if (irq <= 0) {
-		pr_err("could not register gsi hwirq %d name [%s]\n", hwirq,
-								      name);
+	if (!hwirq)
 		return;
-	}
 
-	res->start = irq;
-	res->end = irq;
-	res->flags = IORESOURCE_IRQ;
-	res->name = name;
-}
-
-static int __init arm_smmu_v3_count_resources(struct acpi_iort_node *node)
-{
-	struct acpi_iort_smmu_v3 *smmu;
-	/* Always present mem resource */
-	int num_res = 1;
-
-	/* Retrieve SMMUv3 specific data */
-	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
-
-	if (smmu->event_gsiv)
-		num_res++;
-
-	if (smmu->pri_gsiv)
-		num_res++;
-
-	if (smmu->gerr_gsiv)
-		num_res++;
-
-	if (smmu->sync_gsiv)
-		num_res++;
-
-	return num_res;
+	acpi_static_fwnode_add_irq(fwnode, hwirq, trigger_val, ACPI_ACTIVE_HIGH,
+				   name);
 }
 
 static bool arm_smmu_v3_is_combined_irq(struct acpi_iort_smmu_v3 *smmu)
@@ -1644,43 +1611,35 @@ static void __init arm_smmu_v3_init_resources(struct resource *res,
 					      struct acpi_iort_node *node)
 {
 	struct acpi_iort_smmu_v3 *smmu;
-	int num_res = 0;
 
 	/* Retrieve SMMUv3 specific data */
 	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
 
-	res[num_res].start = smmu->base_address;
-	res[num_res].end = smmu->base_address +
-				arm_smmu_v3_resource_size(smmu) - 1;
-	res[num_res].flags = IORESOURCE_MEM;
+	res[0].start = smmu->base_address;
+	res[0].end = smmu->base_address + arm_smmu_v3_resource_size(smmu) - 1;
+	res[0].flags = IORESOURCE_MEM;
+}
 
-	num_res++;
+static void __init arm_smmu_v3_init_irqs(struct fwnode_handle *fwnode,
+					struct acpi_iort_node *node)
+{
+	struct acpi_iort_smmu_v3 *smmu;
+
+	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
+
 	if (arm_smmu_v3_is_combined_irq(smmu)) {
-		if (smmu->event_gsiv)
-			acpi_iort_register_irq(smmu->event_gsiv, "combined",
-					       ACPI_EDGE_SENSITIVE,
-					       &res[num_res++]);
+		acpi_iort_add_irq(smmu->event_gsiv, "combined",
+				  ACPI_EDGE_SENSITIVE, fwnode);
 	} else {
+		acpi_iort_add_irq(smmu->event_gsiv, "eventq",
+				  ACPI_EDGE_SENSITIVE, fwnode);
 
-		if (smmu->event_gsiv)
-			acpi_iort_register_irq(smmu->event_gsiv, "eventq",
-					       ACPI_EDGE_SENSITIVE,
-					       &res[num_res++]);
-
-		if (smmu->pri_gsiv)
-			acpi_iort_register_irq(smmu->pri_gsiv, "priq",
-					       ACPI_EDGE_SENSITIVE,
-					       &res[num_res++]);
-
-		if (smmu->gerr_gsiv)
-			acpi_iort_register_irq(smmu->gerr_gsiv, "gerror",
-					       ACPI_EDGE_SENSITIVE,
-					       &res[num_res++]);
-
-		if (smmu->sync_gsiv)
-			acpi_iort_register_irq(smmu->sync_gsiv, "cmdq-sync",
-					       ACPI_EDGE_SENSITIVE,
-					       &res[num_res++]);
+		acpi_iort_add_irq(smmu->pri_gsiv, "priq",
+				  ACPI_EDGE_SENSITIVE, fwnode);
+		acpi_iort_add_irq(smmu->gerr_gsiv, "gerror",
+				  ACPI_EDGE_SENSITIVE, fwnode);
+		acpi_iort_add_irq(smmu->sync_gsiv, "cmdq-sync",
+				  ACPI_EDGE_SENSITIVE, fwnode);
 	}
 }
 
@@ -1730,55 +1689,36 @@ static int  __init arm_smmu_v3_set_proximity(struct device *dev,
 #define arm_smmu_v3_set_proximity NULL
 #endif
 
-static int __init arm_smmu_count_resources(struct acpi_iort_node *node)
-{
-	struct acpi_iort_smmu *smmu;
-
-	/* Retrieve SMMU specific data */
-	smmu = (struct acpi_iort_smmu *)node->node_data;
-
-	/*
-	 * Only consider the global fault interrupt and ignore the
-	 * configuration access interrupt.
-	 *
-	 * MMIO address and global fault interrupt resources are always
-	 * present so add them to the context interrupt count as a static
-	 * value.
-	 */
-	return smmu->context_interrupt_count + 2;
-}
-
 static void __init arm_smmu_init_resources(struct resource *res,
 					   struct acpi_iort_node *node)
 {
 	struct acpi_iort_smmu *smmu;
-	int i, hw_irq, trigger, num_res = 0;
-	u64 *ctx_irq, *glb_irq;
 
 	/* Retrieve SMMU specific data */
 	smmu = (struct acpi_iort_smmu *)node->node_data;
 
-	res[num_res].start = smmu->base_address;
-	res[num_res].end = smmu->base_address + smmu->span - 1;
-	res[num_res].flags = IORESOURCE_MEM;
-	num_res++;
+	res[0].start = smmu->base_address;
+	res[0].end = smmu->base_address + smmu->span - 1;
+	res[0].flags = IORESOURCE_MEM;
+}
+
+static void __init arm_smmu_init_irqs(struct fwnode_handle *fwnode,
+				     struct acpi_iort_node *node)
+{
+	struct acpi_iort_smmu *smmu;
+	u64 *ctx_irq, *glb_irq;
+	int i;
+
+	smmu = (struct acpi_iort_smmu *)node->node_data;
 
 	glb_irq = ACPI_ADD_PTR(u64, node, smmu->global_interrupt_offset);
-	/* Global IRQs */
-	hw_irq = IORT_IRQ_MASK(glb_irq[0]);
-	trigger = IORT_IRQ_TRIGGER_MASK(glb_irq[0]);
+	acpi_iort_add_irq(IORT_IRQ_MASK(glb_irq[0]), NULL,
+			  IORT_IRQ_TRIGGER_MASK(glb_irq[0]), fwnode);
 
-	acpi_iort_register_irq(hw_irq, "arm-smmu-global", trigger,
-				     &res[num_res++]);
-
-	/* Context IRQs */
 	ctx_irq = ACPI_ADD_PTR(u64, node, smmu->context_interrupt_offset);
 	for (i = 0; i < smmu->context_interrupt_count; i++) {
-		hw_irq = IORT_IRQ_MASK(ctx_irq[i]);
-		trigger = IORT_IRQ_TRIGGER_MASK(ctx_irq[i]);
-
-		acpi_iort_register_irq(hw_irq, "arm-smmu-context", trigger,
-				       &res[num_res++]);
+		acpi_iort_add_irq(IORT_IRQ_MASK(ctx_irq[i]), NULL,
+				  IORT_IRQ_TRIGGER_MASK(ctx_irq[i]), fwnode);
 	}
 }
 
@@ -1799,20 +1739,6 @@ static void __init arm_smmu_dma_configure(struct device *dev,
 
 	/* Configure DMA for the page table walker */
 	acpi_dma_configure(dev, attr);
-}
-
-static int __init arm_smmu_v3_pmcg_count_resources(struct acpi_iort_node *node)
-{
-	struct acpi_iort_pmcg *pmcg;
-
-	/* Retrieve PMCG specific data */
-	pmcg = (struct acpi_iort_pmcg *)node->node_data;
-
-	/*
-	 * There are always 2 memory resources.
-	 * If the overflow_gsiv is present then add that for a total of 3.
-	 */
-	return pmcg->overflow_gsiv ? 3 : 2;
 }
 
 static void __init arm_smmu_v3_pmcg_init_resources(struct resource *res,
@@ -1837,10 +1763,17 @@ static void __init arm_smmu_v3_pmcg_init_resources(struct resource *res,
 		res[1].end = pmcg->page1_base_address + SZ_4K - 1;
 		res[1].flags = IORESOURCE_MEM;
 	}
+}
 
-	if (pmcg->overflow_gsiv)
-		acpi_iort_register_irq(pmcg->overflow_gsiv, "overflow",
-				       ACPI_EDGE_SENSITIVE, &res[2]);
+static void __init arm_smmu_v3_pmcg_init_irqs(struct fwnode_handle *fwnode,
+					      struct acpi_iort_node *node)
+{
+	struct acpi_iort_pmcg *pmcg;
+
+	pmcg = (struct acpi_iort_pmcg *)node->node_data;
+
+	acpi_iort_add_irq(pmcg->overflow_gsiv, "overflow", ACPI_EDGE_SENSITIVE,
+			  fwnode);
 }
 
 static struct acpi_platform_list pmcg_plat_info[] __initdata = {
@@ -1878,12 +1811,15 @@ static int __init arm_smmu_v3_pmcg_add_platdata(struct platform_device *pdev)
 
 struct iort_dev_config {
 	const char *name;
+	unsigned int nr_irqs;
+	unsigned int nr_res;
 	int (*dev_init)(struct acpi_iort_node *node);
 	void (*dev_dma_configure)(struct device *dev,
 				  struct acpi_iort_node *node);
-	int (*dev_count_resources)(struct acpi_iort_node *node);
 	void (*dev_init_resources)(struct resource *res,
 				     struct acpi_iort_node *node);
+	void (*dev_init_irqs)(struct fwnode_handle *fwnode,
+			      struct acpi_iort_node *node);
 	int (*dev_set_proximity)(struct device *dev,
 				    struct acpi_iort_node *node);
 	int (*dev_add_platdata)(struct platform_device *pdev);
@@ -1891,23 +1827,28 @@ struct iort_dev_config {
 
 static const struct iort_dev_config iort_arm_smmu_v3_cfg __initconst = {
 	.name = "arm-smmu-v3",
+	.nr_irqs = 4,
+	.nr_res = 1,
 	.dev_dma_configure = arm_smmu_v3_dma_configure,
-	.dev_count_resources = arm_smmu_v3_count_resources,
 	.dev_init_resources = arm_smmu_v3_init_resources,
+	.dev_init_irqs = arm_smmu_v3_init_irqs,
 	.dev_set_proximity = arm_smmu_v3_set_proximity,
 };
 
 static const struct iort_dev_config iort_arm_smmu_cfg __initconst = {
 	.name = "arm-smmu",
+	.nr_res = 1,
 	.dev_dma_configure = arm_smmu_dma_configure,
-	.dev_count_resources = arm_smmu_count_resources,
 	.dev_init_resources = arm_smmu_init_resources,
+	.dev_init_irqs = arm_smmu_init_irqs,
 };
 
 static const struct iort_dev_config iort_arm_smmu_v3_pmcg_cfg __initconst = {
 	.name = "arm-smmu-v3-pmcg",
-	.dev_count_resources = arm_smmu_v3_pmcg_count_resources,
+	.nr_irqs = 1,
+	.nr_res = 2,
 	.dev_init_resources = arm_smmu_v3_pmcg_init_resources,
+	.dev_init_irqs = arm_smmu_v3_pmcg_init_irqs,
 	.dev_add_platdata = arm_smmu_v3_pmcg_add_platdata,
 };
 
@@ -1951,7 +1892,7 @@ static int __init iort_add_platform_device(struct acpi_iort_node *node,
 			goto dev_put;
 	}
 
-	count = ops->dev_count_resources(node);
+	count = ops->nr_res;
 
 	r = kzalloc_objs(*r, count);
 	if (!r) {
@@ -1994,6 +1935,9 @@ static int __init iort_add_platform_device(struct acpi_iort_node *node,
 
 	platform_device_set_fwnode(pdev, fwnode);
 
+	if (ops->dev_init_irqs)
+		ops->dev_init_irqs(fwnode, node);
+
 	if (ops->dev_dma_configure)
 		ops->dev_dma_configure(&pdev->dev, node);
 
@@ -2007,6 +1951,7 @@ static int __init iort_add_platform_device(struct acpi_iort_node *node,
 
 dma_deconfigure:
 	arch_teardown_dma_ops(&pdev->dev);
+	platform_device_set_fwnode(pdev, NULL);
 dev_put:
 	platform_device_put(pdev);
 
@@ -2082,7 +2027,18 @@ static void __init iort_init_platform_devices(void)
 
 		ops = iort_get_dev_cfg(iort_node);
 		if (ops) {
-			fwnode = acpi_alloc_fwnode_static();
+			unsigned int nr_irqs = ops->nr_irqs;
+
+			if (iort_node->type == ACPI_IORT_NODE_SMMU) {
+				struct acpi_iort_smmu *smmu =
+					(struct acpi_iort_smmu *)iort_node->node_data;
+
+				if (smmu->context_interrupt_count == UINT_MAX)
+					return;
+				nr_irqs = smmu->context_interrupt_count + 1;
+			}
+
+			fwnode = acpi_alloc_fwnode_static_irqs(nr_irqs);
 			if (!fwnode)
 				return;
 
