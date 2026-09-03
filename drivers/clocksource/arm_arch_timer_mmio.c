@@ -191,6 +191,33 @@ static irqreturn_t arch_timer_mmio_handler(int irq, void *dev_id)
 	return IRQ_NONE;
 }
 
+static void arch_timer_mmio_unmap_irq(int *irq)
+{
+	if (!(*irq))
+		return;
+
+	irq_dispose_mapping(*irq);
+	*irq = 0;
+}
+
+static void arch_timer_mmio_unmap_frame_irqs(struct arch_timer_mem_frame *frame)
+{
+	arch_timer_mmio_unmap_irq(&frame->phys_irq);
+	arch_timer_mmio_unmap_irq(&frame->virt_irq);
+}
+
+static void arch_timer_mmio_unmap_irqs(struct arch_timer_mem *gt_block)
+{
+	for (unsigned int i = 0; i < ARCH_TIMER_MEM_MAX_FRAMES; i++) {
+		struct arch_timer_mem_frame *frame = &gt_block->frame[i];
+
+		if (!frame->valid)
+			continue;
+
+		arch_timer_mmio_unmap_frame_irqs(frame);
+	}
+}
+
 static struct arch_timer_mem_frame *find_best_frame(struct platform_device *pdev)
 {
 	struct arch_timer_mem_frame *frame, *best_frame = NULL;
@@ -398,6 +425,7 @@ static int arch_timer_mmio_probe(struct platform_device *pdev)
 
 	frame = find_best_frame(pdev);
 	if (!frame) {
+		arch_timer_mmio_unmap_irqs(at->gt_block);
 		dev_err(&pdev->dev,
 			"Unable to find a suitable frame in timer @ %pa\n",
 			&at->gt_block->cntctlbase);
@@ -405,14 +433,17 @@ static int arch_timer_mmio_probe(struct platform_device *pdev)
 	}
 
 	ret = arch_timer_mmio_frame_register(pdev, frame);
-	if (!ret)
-		dev_info(&pdev->dev,
-			 "mmio timer running at %lu.%02luMHz (%s)\n",
-			 (unsigned long)at->rate / 1000000,
-			 (unsigned long)(at->rate / 10000) % 100,
-			 at->access == VIRT_ACCESS ? "virt" : "phys");
+	if (ret) {
+		arch_timer_mmio_unmap_irqs(at->gt_block);
+		return ret;
+	}
 
-	return ret;
+	dev_info(&pdev->dev, "mmio timer running at %lu.%02luMHz (%s)\n",
+			     (unsigned long)at->rate / 1000000,
+			     (unsigned long)(at->rate / 10000) % 100,
+			     at->access == VIRT_ACCESS ? "virt" : "phys");
+
+	return 0;
 }
 
 static const struct of_device_id arch_timer_mmio_of_table[] = {
