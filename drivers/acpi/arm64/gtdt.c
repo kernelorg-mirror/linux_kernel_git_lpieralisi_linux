@@ -279,31 +279,20 @@ static int __init gtdt_parse_timer_block(struct acpi_gtdt_timer_block *block,
 			continue;
 		if (gtdt_frame->frame_number >= ARCH_TIMER_MEM_MAX_FRAMES ||
 		    !gtdt_frame->base_address || !gtdt_frame->timer_interrupt)
-			goto error;
+			return -EINVAL;
 
 		frame = &timer_mem->frame[gtdt_frame->frame_number];
 
 		/* duplicate frame */
 		if (frame->valid)
-			goto error;
+			return -EINVAL;
 
-		frame->phys_irq = map_gt_gsi(gtdt_frame->timer_interrupt,
-					     gtdt_frame->timer_flags);
-		if (frame->phys_irq <= 0) {
-			pr_warn("failed to map physical timer irq in frame %d.\n",
-				gtdt_frame->frame_number);
-			goto error;
-		}
+		frame->phys_gsi = gtdt_frame->timer_interrupt;
+		frame->phys_flags = gtdt_frame->timer_flags;
 
 		if (gtdt_frame->virtual_timer_interrupt) {
-			frame->virt_irq =
-				map_gt_gsi(gtdt_frame->virtual_timer_interrupt,
-					   gtdt_frame->virtual_timer_flags);
-			if (frame->virt_irq <= 0) {
-				pr_warn("failed to map virtual timer irq in frame %d.\n",
-					gtdt_frame->frame_number);
-				goto error;
-			}
+			frame->virt_gsi = gtdt_frame->virtual_timer_interrupt;
+			frame->virt_flags = gtdt_frame->virtual_timer_flags;
 		} else {
 			pr_debug("virtual timer in frame %d not implemented.\n",
 				 gtdt_frame->frame_number);
@@ -320,25 +309,6 @@ static int __init gtdt_parse_timer_block(struct acpi_gtdt_timer_block *block,
 	}
 
 	return 0;
-
-error:
-	do {
-		if (gtdt_frame->common_flags & ACPI_GTDT_GT_IS_SECURE_TIMER ||
-		    gtdt_frame->frame_number >= ARCH_TIMER_MEM_MAX_FRAMES)
-			continue;
-
-		frame = &timer_mem->frame[gtdt_frame->frame_number];
-
-		if (frame->phys_irq > 0)
-			acpi_unregister_gsi(gtdt_frame->timer_interrupt);
-		frame->phys_irq = 0;
-
-		if (frame->virt_irq > 0)
-			acpi_unregister_gsi(gtdt_frame->virtual_timer_interrupt);
-		frame->virt_irq = 0;
-	} while (i-- > 0 && gtdt_frame--);
-
-	return -EINVAL;
 }
 
 /*
