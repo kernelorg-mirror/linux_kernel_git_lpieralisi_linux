@@ -1096,12 +1096,18 @@ EXPORT_SYMBOL(fwnode_irq_get);
  */
 int fwnode_irq_get_byname(const struct fwnode_handle *fwnode, const char *name)
 {
+	const struct fwnode_handle *curr_fwnode = fwnode;
 	int index;
 
 	if (!name)
 		return -EINVAL;
 
-	index = fwnode_property_match_string(fwnode, "interrupt-names",  name);
+	index = fwnode_property_match_string(curr_fwnode, "interrupt-names",  name);
+	if ((index == -EINVAL || index == -ENXIO) && curr_fwnode->secondary) {
+		curr_fwnode = fwnode->secondary;
+		index = fwnode_property_match_string(curr_fwnode, "interrupt-names",  name);
+	}
+
 	if (index < 0)
 		return index;
 
