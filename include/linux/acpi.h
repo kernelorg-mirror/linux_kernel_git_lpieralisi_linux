@@ -64,17 +64,58 @@ static inline acpi_handle acpi_device_handle(struct acpi_device *adev)
 #define ACPI_HANDLE_FWNODE(fwnode)	\
 				acpi_device_handle(to_acpi_device_node(fwnode))
 
-static inline struct fwnode_handle *acpi_alloc_fwnode_static(void)
-{
-	struct fwnode_handle *fwnode;
 
-	fwnode = kzalloc_obj(struct fwnode_handle);
-	if (!fwnode)
+struct acpi_static_irq {
+	u32 gsi;
+	u8 trigger;
+	u8 polarity;
+	const char *name;
+};
+
+struct acpi_static_fwnode {
+	struct fwnode_handle fwnode;
+	unsigned int irq_count;
+	unsigned int nr_irqs;
+	struct acpi_static_irq irqs[];
+};
+
+int acpi_static_fwnode_irq_get(const struct fwnode_handle *fwnode,
+			       unsigned int index);
+
+static inline struct fwnode_handle *acpi_alloc_fwnode_static_irqs(unsigned int nr_irqs)
+{
+	struct acpi_static_fwnode *node;
+
+	node = kzalloc(struct_size(node, irqs, nr_irqs), GFP_KERNEL);
+	if (!node)
 		return NULL;
 
-	fwnode_init(fwnode, &acpi_static_fwnode_ops);
+	fwnode_init(&node->fwnode, &acpi_static_fwnode_ops);
+	node->nr_irqs = nr_irqs;
 
-	return fwnode;
+	return &node->fwnode;
+}
+
+static inline struct fwnode_handle *acpi_alloc_fwnode_static(void)
+{
+	return acpi_alloc_fwnode_static_irqs(0);
+}
+
+static inline void acpi_static_fwnode_add_irq(struct fwnode_handle *fwnode,
+					      u32 gsi, u8 trigger, u8 polarity,
+					      const char *name)
+{
+	struct acpi_static_fwnode *node = container_of(fwnode,
+					  struct acpi_static_fwnode, fwnode);
+	struct acpi_static_irq *irq;
+
+	if (WARN_ON(node->irq_count >= node->nr_irqs))
+		return;
+	irq = &node->irqs[node->irq_count++];
+	irq->gsi = gsi;
+	irq->trigger = trigger;
+	irq->polarity = polarity;
+	irq->name = name;
 }
 
 static inline void acpi_free_fwnode_static(struct fwnode_handle *fwnode)
@@ -82,7 +123,7 @@ static inline void acpi_free_fwnode_static(struct fwnode_handle *fwnode)
 	if (WARN_ON(!is_acpi_static_node(fwnode)))
 		return;
 
-	kfree(fwnode);
+	kfree(container_of(fwnode, struct acpi_static_fwnode, fwnode));
 }
 
 static inline bool has_acpi_companion(struct device *dev)
@@ -888,6 +929,17 @@ static inline bool is_acpi_node(const struct fwnode_handle *fwnode)
 static inline bool is_acpi_device_node(const struct fwnode_handle *fwnode)
 {
 	return false;
+}
+
+static inline bool is_acpi_static_node(const struct fwnode_handle *fwnode)
+{
+	return false;
+}
+
+static inline int acpi_static_fwnode_irq_get(const struct fwnode_handle *fwnode,
+					     unsigned int index)
+{
+	return -ENXIO;
 }
 
 static inline struct acpi_device *to_acpi_device_node(const struct fwnode_handle *fwnode)

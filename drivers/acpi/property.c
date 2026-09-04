@@ -1766,7 +1766,46 @@ static int acpi_fwnode_irq_get(const struct fwnode_handle *fwnode,
 
 DECLARE_ACPI_FWNODE_OPS(acpi_device_fwnode_ops);
 DECLARE_ACPI_FWNODE_OPS(acpi_data_fwnode_ops);
-const struct fwnode_operations acpi_static_fwnode_ops;
+
+static int acpi_static_fwnode_read_string_array(const struct fwnode_handle *fwnode,
+						const char *propname,
+						const char **val, size_t nval)
+{
+	const struct acpi_static_fwnode *node = container_of(fwnode,
+						struct acpi_static_fwnode, fwnode);
+	unsigned int i;
+
+	if (strcmp(propname, "interrupt-names") || !node->irq_count || !node->irqs[0].name)
+		return -EINVAL;
+
+	if (!val)
+		return node->irq_count;
+
+	nval = min_t(size_t, nval, node->irq_count);
+
+	for (i = 0; i < nval; i++)
+		val[i] = node->irqs[i].name;
+
+	return nval;
+}
+
+int acpi_static_fwnode_irq_get(const struct fwnode_handle *fwnode, unsigned int index)
+{
+	const struct acpi_static_fwnode *node = container_of(fwnode,
+						struct acpi_static_fwnode, fwnode);
+	const struct acpi_static_irq *irq;
+
+	if (index >= node->irq_count)
+		return -ENXIO;
+
+	irq = &node->irqs[index];
+	return acpi_register_gsi(NULL, irq->gsi, irq->trigger, irq->polarity);
+}
+
+const struct fwnode_operations acpi_static_fwnode_ops = {
+	.property_read_string_array = acpi_static_fwnode_read_string_array,
+	.irq_get = acpi_static_fwnode_irq_get,
+};
 
 bool is_acpi_device_node(const struct fwnode_handle *fwnode)
 {
