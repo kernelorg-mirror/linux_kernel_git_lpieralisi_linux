@@ -228,6 +228,10 @@ int platform_get_irq_affinity(struct platform_device *dev, unsigned int num,
 		goto out;
 	}
 
+	ret = fwnode_irq_get(fwnode, num);
+	if (ret > 0 || ret == -EPROBE_DEFER)
+		goto out;
+
 	/*
 	 * For the index 0 interrupt, allow falling back to GpioInt
 	 * resources. While a device could have both Interrupt and GpioInt
