@@ -5779,13 +5779,26 @@ err_remove:
 	return ERR_PTR(ret);
 }
 
+static int arm_smmu_get_irq(struct platform_device *pdev, const char *name,
+			    int *irq_out)
+{
+	int irq = platform_get_irq_byname_optional(pdev, name);
+
+	if (irq == -EPROBE_DEFER)
+		return dev_err_probe(&pdev->dev, irq, "failed to get %s IRQ\n", name);
+	if (irq > 0)
+		*irq_out = irq;
+
+	return 0;
+}
+
 static int arm_smmu_device_probe(struct platform_device *pdev)
 {
-	int irq, ret;
 	struct resource *res;
 	resource_size_t ioaddr;
 	struct arm_smmu_device *smmu;
 	struct device *dev = &pdev->dev;
+	int ret;
 
 	smmu = devm_kzalloc(dev, sizeof(*smmu), GFP_KERNEL);
 	if (!smmu)
@@ -5833,22 +5846,22 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 
 	/* Interrupt lines */
 
-	irq = platform_get_irq_byname_optional(pdev, "combined");
-	if (irq > 0)
-		smmu->combined_irq = irq;
-	else {
-		irq = platform_get_irq_byname_optional(pdev, "eventq");
-		if (irq > 0)
-			smmu->evtq.q.irq = irq;
+	ret = arm_smmu_get_irq(pdev, "combined", &smmu->combined_irq);
+	if (ret)
+		return ret;
 
-		irq = platform_get_irq_byname_optional(pdev, "priq");
-		if (irq > 0)
-			smmu->priq.q.irq = irq;
-
-		irq = platform_get_irq_byname_optional(pdev, "gerror");
-		if (irq > 0)
-			smmu->gerr_irq = irq;
+	if (!smmu->combined_irq) {
+		ret = arm_smmu_get_irq(pdev, "eventq", &smmu->evtq.q.irq);
+		if (ret)
+			return ret;
+		ret = arm_smmu_get_irq(pdev, "priq", &smmu->priq.q.irq);
+		if (ret)
+			return ret;
+		ret = arm_smmu_get_irq(pdev, "gerror", &smmu->gerr_irq);
+		if (ret)
+			return ret;
 	}
+
 	/* Probe the h/w */
 	ret = arm_smmu_device_hw_probe(smmu);
 	if (ret)
