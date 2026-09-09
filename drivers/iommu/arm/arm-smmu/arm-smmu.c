@@ -2154,6 +2154,8 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 		return PTR_ERR(smmu);
 
 	num_irqs = platform_irq_count(pdev);
+	if (num_irqs < 0)
+		return dev_err_probe(dev, num_irqs, "IRQ count failed\n");
 
 	smmu->num_context_irqs = num_irqs - global_irqs - pmu_irqs;
 	if (smmu->num_context_irqs <= 0)
